@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Open Library Metadata Inspector</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>
+:root{--bg:#eef1f4;--surface:#fff;--ink:#1b2430;--muted:#66707d;--line:#d9dfe5;--accent:#8c2f39;--accent-ink:#fff;--chip:#e2e8ee;
+  --sans:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;--mono:ui-monospace,Menlo,monospace;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#14181e;--surface:#1d232b;--ink:#eef1f4;--muted:#97a1ad;--line:#2d3540;--accent:#c8505c;--accent-ink:#14181e;--chip:#2a323c;color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.4 var(--sans);
+  padding:env(safe-area-inset-top,0) env(safe-area-inset-right,0) calc(env(safe-area-inset-bottom,0px) + 30px) env(safe-area-inset-left,0)}
+.wrap{max-width:1100px;margin:0 auto;padding:0 18px}
+h1{font-size:26px;margin:20px 0 4px}
+p.sub{margin:0 0 14px;color:var(--muted);font-size:15px}
+label{display:block;font-weight:600;font-size:14px;margin:14px 0 5px}
+input,textarea,select{width:100%;font:16px var(--sans);color:var(--ink);background:var(--surface);border:1.5px solid var(--line);border-radius:12px;padding:12px 14px}
+textarea{font-family:var(--mono);font-size:15px;min-height:84px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
+.row>div{flex:1;min-width:140px}
+button{min-height:48px;padding:0 20px;border:0;border-radius:12px;font:600 16px var(--sans);cursor:pointer;background:var(--chip);color:var(--ink)}
+button.go{background:var(--accent);color:var(--accent-ink)}
+button[aria-pressed="true"]{background:var(--accent);color:var(--accent-ink)}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.chips button{min-height:40px;padding:0 14px;font-size:14px;font-family:var(--mono)}
+#cands{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+#cands button{text-align:left;padding:8px 14px;min-height:52px}
+#cands small{display:block;color:var(--muted);font-weight:400}
+#url{font:13px var(--mono);color:var(--muted);word-break:break-all;margin-top:12px}
+#info{margin:12px 0 6px;font-weight:600}
+#info.err{color:var(--accent)}
+.box{overflow:auto;max-height:70vh;background:var(--surface);border:1px solid var(--line);border-radius:12px;-webkit-overflow-scrolling:touch}
+table{border-collapse:collapse;font-size:14px;width:100%}
+th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;max-width:300px;overflow-wrap:anywhere}
+th{position:sticky;top:0;background:var(--chip);white-space:nowrap}
+pre{margin:0;padding:14px;font:13px/1.45 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Open Library Metadata Inspector</h1>
+  <p class="sub">See the raw fields Open Library returns for a search, and test query modifiers before using them in the book app.</p>
+
+  <label for="aname">1. Find an author</label>
+  <div class="row">
+    <div><input id="aname" placeholder="e.g. David Baldacci" autocapitalize="words" autocorrect="off"></div>
+    <button id="afind" type="button" style="flex:none">Find author</button>
+  </div>
+  <div id="cands"></div>
+
+  <label for="q">2. Query (the q parameter, edit freely)</label>
+  <textarea id="q" spellcheck="false" autocapitalize="off" autocorrect="off">author_key:OL000000A AND language:eng</textarea>
+  <div class="chips" id="chips"></div>
+
+  <div class="row">
+    <div style="flex:3;min-width:240px"><label for="fields">Fields (comma-separated, or * for everything)</label>
+      <input id="fields" spellcheck="false" autocapitalize="off" value="key,title,first_publish_year,edition_count,language,subject,number_of_pages_median,author_name"></div>
+    <div><label for="limit">Limit</label>
+      <select id="limit"><option>50</option><option>100</option><option selected>200</option><option>400</option></select></div>
+    <div><label for="sort">Sort</label>
+      <select id="sort"><option value="">Relevance</option><option value="old">Oldest first</option><option value="new">Newest first</option><option value="editions">Most editions</option></select></div>
+  </div>
+  <div class="row" style="margin-top:14px"><button class="go" id="run" type="button">Run search</button></div>
+
+  <div id="url"></div>
+  <div id="info" role="status" aria-live="polite"></div>
+
+  <div class="row" style="margin-bottom:10px">
+    <div style="flex:3;min-width:220px"><input id="filter" placeholder="Filter rows by any text, e.g. editions" autocapitalize="off" autocorrect="off"></div>
+    <button id="vt" type="button" aria-pressed="true">Table</button>
+    <button id="vj" type="button" aria-pressed="false">Raw JSON</button>
+    <button id="cj" type="button">Copy JSON</button>
+    <button id="ct" type="button">Copy as TSV</button>
+  </div>
+  <div class="box" id="tbox"></div>
+  <div class="box" id="jbox" hidden><pre id="json"></pre></div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var API="https://openlibrary.org", $=function(i){return document.getElementById(i)};
+  var data=null;
+  function esc(s){return String(s).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})}
+  function info(m,err){var e=$("info");e.textContent=m;e.className=err?"err":""}
+
+  /* author lookup */
+  function findAuthor(){
+    var n=$("aname").value.trim(); if(!n)return;
+    info("Looking up author…"); $("cands").innerHTML="";
+    fetch(API+"/search/authors.json?limit=10&q="+encodeURIComponent(n)).then(function(r){
+      if(!r.ok)throw new Error("HTTP "+r.status); return r.json();
+    }).then(function(d){
+      var docs=d.docs||[];
+      info(docs.length?"Tap an author to use their key in the query.":"No authors found.",!docs.length);
+      $("cands").innerHTML=docs.map(function(a){
+        var k=(a.key||"").replace("/authors/","");
+        return '<button type="button" data-k="'+esc(k)+'">'+esc(a.name)+'<small>'+esc(k)+' · '+(a.work_count||0)+' works'+(a.top_work?' · '+esc(a.top_work):'')+'</small></button>';
+      }).join("");
+    }).catch(function(e){info("Failed: "+e.message,true)});
+  }
+  $("afind").onclick=findAuthor;
+  $("aname").addEventListener("keydown",function(e){if(e.key==="Enter")findAuthor()});
+  $("cands").addEventListener("click",function(e){
+    var b=e.target.closest("button"); if(!b)return;
+    var q=$("q"), k=b.dataset.k;
+    q.value=/author_key:\S+/.test(q.value)?q.value.replace(/author_key:\S+/,"author_key:"+k):"author_key:"+k+" AND language:eng";
+    info("Author key set to "+k+". Tap Run search.");
+  });
+
+  /* modifier chips */
+  var MODS=['-title:"box set"','-title:collection','-title:collections','-title:omnibus','-title:anthology','-title:"select editions"','-title:volume','-title:"short stories"','-subject:"short stories"','-subject:anthologies','-subject:collections','edition_count:[2 TO *]'];
+  $("chips").innerHTML=MODS.map(function(m,i){return '<button type="button" data-i="'+i+'">+ '+esc(m)+'</button>'}).join("");
+  $("chips").addEventListener("click",function(e){
+    var b=e.target.closest("button"); if(!b)return;
+    var q=$("q"); q.value=q.value.replace(/\s+$/,"")+" AND "+MODS[b.dataset.i];
+  });
+
+  /* run */
+  function run(){
+    var q=$("q").value.trim(); if(!q){info("Enter a query.",true);return}
+    var fields=$("fields").value.trim()||"key,title";
+    var url=API+"/search.json?q="+encodeURIComponent(q)+"&fields="+encodeURIComponent(fields)+"&limit="+$("limit").value+($("sort").value?"&sort="+$("sort").value:"");
+    $("url").textContent=url; info("Loading…");
+    fetch(url).then(function(r){if(!r.ok)throw new Error("HTTP "+r.status);return r.json()}).then(function(d){data=d;render()})
+      .catch(function(e){info("Failed: "+e.message+" (the query may be invalid, or Open Library is busy)",true)});
+  }
+  $("run").onclick=run;
+
+  /* render */
+  function cell(v){
+    if(v===undefined||v===null)return "";
+    if(Array.isArray(v))return v.map(function(x){return typeof x==="object"?JSON.stringify(x):x}).join("; ");
+    if(typeof v==="object")return JSON.stringify(v);
+    return String(v);
+  }
+  function rows(){
+    var docs=(data&&data.docs)||[], f=$("filter").value.trim().toLowerCase();
+    return f?docs.filter(function(d){return JSON.stringify(d).toLowerCase().indexOf(f)>-1}):docs;
+  }
+  function cols(docs){
+    var seen={},out=[];
+    (docs||[]).forEach(function(d){Object.keys(d).forEach(function(k){if(!seen[k]){seen[k]=1;out.push(k)}})});
+    var i=out.indexOf("title"); if(i>0){out.splice(i,1);out.unshift("title")}
+    return out;
+  }
+  function render(){
+    if(!data)return;
+    var all=data.docs||[], r=rows(), c=cols(all);
+    info((data.numFound!==undefined?data.numFound+" found on Open Library · ":"")+all.length+" returned"+(r.length!==all.length?" · "+r.length+" match filter":""));
+    $("tbox").innerHTML=r.length?'<table><thead><tr><th>#</th>'+c.map(function(k){return '<th>'+esc(k)+'</th>'}).join("")+'</tr></thead><tbody>'+
+      r.map(function(d,i){return '<tr><td>'+(i+1)+'</td>'+c.map(function(k){
+        var t=cell(d[k]), short=t.length>160?t.slice(0,160)+"…":t;
+        return '<td title="'+esc(t)+'">'+esc(short)+'</td>';
+      }).join("")+'</tr>'}).join("")+'</tbody></table>':'<pre>No rows.</pre>';
+    $("json").textContent=JSON.stringify({numFound:data.numFound,docs:r},null,2);
+  }
+  $("filter").addEventListener("input",render);
+
+  /* views and copy */
+  function view(t){
+    $("tbox").hidden=!t; $("jbox").hidden=t;
+    $("vt").setAttribute("aria-pressed",t); $("vj").setAttribute("aria-pressed",!t);
+  }
+  $("vt").onclick=function(){view(true)}; $("vj").onclick=function(){view(false)};
+  function copy(text,label){
+    function fallback(){
+      var ta=document.createElement("textarea"); ta.value=text; document.body.appendChild(ta); ta.select();
+      try{document.execCommand("copy");info(label+" copied.")}catch(e){info("Copy failed; use the Raw JSON view and select all.",true)}
+      ta.remove();
+    }
+    if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(text).then(function(){info(label+" copied.")},fallback);
+    else fallback();
+  }
+  $("cj").onclick=function(){if(data)copy($("json").textContent,"JSON")};
+  $("ct").onclick=function(){
+    if(!data)return;
+    var r=rows(), c=cols(data.docs||[]);
+    function t(v){return cell(v).replace(/[\t\r\n]+/g," ")}
+    copy([c.join("\t")].concat(r.map(function(d){return c.map(function(k){return t(d[k])}).join("\t")})).join("\n"),"TSV");
+  };
+})();
+</script>
+</body>
+</html>
